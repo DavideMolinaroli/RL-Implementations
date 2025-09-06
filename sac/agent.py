@@ -25,7 +25,7 @@ class Agent():
         self.update_network_parameters(tau = 1)
 
     def choose_action(self, observation):
-        print(observation)
+        # print(observation)
         state = T.tensor(observation, dtype=T.float).unsqueeze(0).to(self.actor.device)
         actions, _ = self.actor.sample_normal(state, reparametrize=False)
 

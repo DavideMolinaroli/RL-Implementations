@@ -113,21 +113,30 @@ class ActorNetwork(nn.Module):
 
         return mu, sigma
     
-    def sample_normal(self, state, reparametrize = True):
+    def sample_normal(self, state, reparametrize=True):
         mu, sigma = self.forward(state)
-        probabilities = Normal(mu, sigma)
+        dist = Normal(mu, sigma)
 
+        # Unsquashed action (u ~ N(mu, sigma))
         if reparametrize:
-            actions = probabilities.rsample()
+            u = dist.rsample()
         else:
-            actions = probabilities.sample()
+            u = dist.sample()
 
-        action = T.tanh(actions)*T.tensor(self.max_action).to(self.device)
-        log_probs = probabilities.log_prob(actions)
-        log_probs = -T.log(1-action.pow(2)+self.reparam_noise)
-        log_probs = log_probs.sum(1, keepdim=True) # to have a scalar
+        # Squashed action in [-max_action, max_action]
+        action = T.tanh(u) * self.max_action
 
-        return action, log_probs
+        # Log probability of unsquashed action
+        log_prob = dist.log_prob(u)
+
+        # Correction for tanh squashing
+        # log(1 - tanh(u)^2) can be unstable near +/-1, add epsilon
+        log_prob -= T.log(1 - T.tanh(u).pow(2) + self.reparam_noise)
+
+        # Sum over action dimensions
+        log_prob = log_prob.sum(1, keepdim=True)
+
+        return action, log_prob
     
     def save_checkpoint(self):
         T.save(self.state_dict(), self.checkpoint_file)
