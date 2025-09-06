@@ -1,6 +1,6 @@
 import gymnasium as gym
 import numpy as np
-from ppo import Agent
+from ppo_discrete import Agent
 
 if __name__ == '__main__':
     env = gym.make('CartPole-v1')
