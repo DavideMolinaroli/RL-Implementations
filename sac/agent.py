@@ -18,7 +18,9 @@ class Agent():
         self.critic_2 = CriticNetwork(beta, input_dims=input_dims, n_actions=n_actions, name='critic2')
         self.value = ValueNetwork(beta, input_dims=input_dims, name='value')
         
-        # target_value is just an exponential moving average of the value network, used just to stabilize training
+        # target_value is just an exponential moving average of the value network, used just to stabilize training.
+        # so the value function is updated using the self.value network. Other operations use this target_value network.
+        # other operations are just the estimate Q_hat(st,at) for the critic networks
         self.target_value = ValueNetwork(beta, input_dims=input_dims, name='target_value')
         
         self.scale = reward_scale
@@ -62,56 +64,58 @@ class Agent():
             return
         
         # batch of transitions of size batch_size
-        state, action, reward, new_state, done = self.memory.sample_buffer(self.batch_size)
+        s_t, a_t, r_t, s_tplus1, done = self.memory.sample_buffer(self.batch_size)
 
-        reward = T.tensor(reward, dtype = T.float).to(self.actor.device)
+        s_t = T.tensor(s_t, dtype = T.float).to(self.actor.device)
+        a_t = T.tensor(a_t, dtype=T.float).to(self.actor.device)
+        r_t = T.tensor(r_t, dtype = T.float).to(self.actor.device)
+        s_tplus1 = T.tensor(s_tplus1, dtype = T.float).to(self.actor.device)
         done = T.tensor(done).to(self.actor.device)
-        state_ = T.tensor(new_state, dtype = T.float).to(self.actor.device)
-        state = T.tensor(state, dtype = T.float).to(self.actor.device)
-        action = T.tensor(action, dtype=T.float).to(self.actor.device)
 
-        value = self.value(state).view(-1)
-        value_ = self.target_value(state_).view(-1) # target_value is the value function used to estimate the value of s_{t+1}
-        value_[done] = 0.0
+        value = self.value(s_t).view(-1)
+        value_s_tplus1 = self.target_value(s_tplus1).view(-1) # target_value is the value function used to estimate the value of s_{t+1}
+        value_s_tplus1[done] = 0.0
 
         # q values of the current policy because the action is sampled from the actor and not from the replay buffer
         # value and actor networks need to use the current policy
-        actions, log_probs = self.actor.sample_normal(state, reparametrize=False)
+        a_curr_policy, log_probs = self.actor.sample_normal(s_t, reparametrize=False)
         log_probs = log_probs.view(-1)
-        q1_new_policy = self.critic_1.forward(state, actions)
-        q2_new_policy = self.critic_2.forward(state, actions)
-        critic_value = T.min(q1_new_policy, q2_new_policy) # for overestimation bias
-        critic_value = critic_value.view(-1)
+        q1_curr_policy = self.critic_1.forward(s_t, a_curr_policy)
+        q2_curr_policy = self.critic_2.forward(s_t, a_curr_policy)
+        critic_value = T.min(q1_curr_policy, q2_curr_policy) # for overestimation bias
+        q_st_a_curr_policy = critic_value.view(-1)
 
         self.value.optimizer.zero_grad()
-        value_target = critic_value - log_probs # soft policy iteration (equations 3 of the SAC paper)
-        value_loss = 0.5*F.mse_loss(value, value_target)
-        value_loss.backward(retain_graph=True) # because losses are coupled we want to keep the graph
+        v_st_hat = (q_st_a_curr_policy - log_probs).detach() # soft policy iteration (equations 3 of the SAC paper)
+        value_loss = 0.5*F.mse_loss(value, v_st_hat)
+        # carefull: this loss would put gradients also into the actors and critic because of q_st_a_curr_policy and log_probs.
+        # so, putting the detach() makes it so that no gradients are computed further those variables.
+        value_loss.backward() 
         self.value.optimizer.step()
 
         # Reparametrize = True because this needs to be differentiated (see eq. 12 and 13 of the SAC paper)
         # So this is the same code used for the value loss, but with differentiability
-        actions, log_probs = self.actor.sample_normal(state, reparametrize=True)
+        a_curr_policy, log_probs = self.actor.sample_normal(s_t, reparametrize=True)
         log_probs = log_probs.view(-1)
-        q1_new_policy = self.critic_1.forward(state, actions)
-        q2_new_policy = self.critic_2.forward(state,actions)
-        critic_value = T.min(q1_new_policy, q2_new_policy)
-        critic_value = critic_value.view(-1)
+        q1_curr_policy = self.critic_1.forward(s_t, a_curr_policy)
+        q2_curr_policy = self.critic_2.forward(s_t,a_curr_policy)
+        critic_value = T.min(q1_curr_policy, q2_curr_policy)
+        q_st_a_curr_policy = critic_value.view(-1)
 
         # equation 12 of the SAC paper
-        actor_loss = log_probs - critic_value
-        actor_loss = T.mean(actor_loss)
+        actor_loss = T.mean(log_probs - q_st_a_curr_policy)
         self.actor.optimizer.zero_grad()
-        actor_loss.backward(retain_graph=True)
+        actor_loss.backward()
         self.actor.optimizer.step()
 
         self.critic_1.optimizer.zero_grad()
         self.critic_2.optimizer.zero_grad()
-        q_hat = self.scale*reward + self.gamma*value_ # bootstrapping: Q_hat(s_t,a_t) = r + scale*V(s_{t+1})
+        # detach to value_s_tplus1 to not put gradients into the target_value network
+        q_hat = self.scale*r_t + self.gamma*value_s_tplus1.detach() # bootstrapping: Q_hat(s_t,a_t) = r + scale*V(s_{t+1})
         # use state,action pairs from the replay buffer to update the Q networks
         # because they need to learn the general environment dynamics
-        q1_old_policy = self.critic_1.forward(state,action).view(-1)
-        q2_old_policy = self.critic_2.forward(state,action).view(-1)
+        q1_old_policy = self.critic_1.forward(s_t,a_t).view(-1)
+        q2_old_policy = self.critic_2.forward(s_t,a_t).view(-1)
         critic_1_loss = 0.5*F.mse_loss(q1_old_policy, q_hat)
         critic_2_loss = 0.5*F.mse_loss(q2_old_policy, q_hat)
 
