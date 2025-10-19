@@ -32,6 +32,8 @@ if __name__ == '__main__':
         done = False
         score = 0
         while not done:
+            # I also need to store the value V of the observation to use it whenever this transition will be drawn from a sampled batch.
+            # This will be needed to compute the reward-to-go (return) from that state after computing the advantages
             action, prob, val = agent.choose_action(observation)
 
             # Gymnasium step API

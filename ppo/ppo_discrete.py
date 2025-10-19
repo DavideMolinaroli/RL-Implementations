@@ -160,8 +160,10 @@ class Agent:
                 advantage[t] = a_t
             advantage = T.tensor(advantage).to(self.actor.device)
             values = T.tensor(values).to(self.actor.device)
+            # advantage + values = reward-to-go (or return Gt as in class, basically sum of discounted rewards from t to end)
 
             # here batches are shuffled
+            print(batches)
             for batch in batches:
                 # batch is an array containing indices
                 states = T.tensor(state_arr[batch], dtype = T.float).to(self.actor.device)
@@ -175,12 +177,13 @@ class Agent:
                 critic_value = T.squeeze(critic_value)
 
                 new_probs = dist.log_prob(actions)
+                print(new_probs, old_probs)
                 prob_ratio = new_probs.exp() / old_probs.exp()
                 weighted_probs = advantage[batch]*prob_ratio # element-wise multiplication
                 weighted_clipped_probs = T.clamp(prob_ratio, 1-self.policy_clip, 1+self.policy_clip)*advantage[batch]
                 
                 actor_loss = -T.min(weighted_probs, weighted_clipped_probs).mean()
-                returns = advantage[batch] + values[batch]
+                returns = advantage[batch] + values[batch] # these returns approximate the Q value
                 critic_loss = (returns-critic_value)**2
                 critic_loss = critic_loss.mean()
 
